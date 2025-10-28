@@ -232,6 +232,9 @@ def parse_args():
     parser.add_argument("--sensitive-output", help="Output file for sensitive information findings")
     parser.add_argument("--max-js-files", type=int, default=20, help="Maximum number of JS files to analyze for sensitive info")
     
+    # 新增参数：直接传入JS地址进行敏感信息检测
+    parser.add_argument("--js-url", help="Directly analyze a JavaScript file URL for sensitive information")
+    
     return parser.parse_args()
 
 # Regular expression comes from https://github.com/GerbenJavado/LinkFinder
@@ -419,6 +422,20 @@ def find_by_file(file_path, js=False):
 	print("ALL Find " + str(len(links)) + " links")
 	urls = []
 	i = len(links)
+	
+	# 首先检查文件中的链接是否为JS文件链接
+	js_file_links = []
+	for link in links:
+		if link.strip() and (link.lower().endswith('.js') or '.js?' in link.lower()):
+			js_file_links.append(link.strip())
+	
+	# 如果文件包含JS文件链接，直接返回这些链接（无论是否启用敏感信息检测）
+	if js_file_links:
+		print(f"[+] 发现 {len(js_file_links)} 个JS文件链接")
+		# 对于JS文件链接，直接返回它们，不需要调用find_by_url
+		return js_file_links
+	
+	# 对于非JS文件链接，继续原来的处理逻辑
 	for link in links:
 		if js == False:
 			temp_urls = find_by_url(link)
@@ -430,16 +447,6 @@ def find_by_file(file_path, js=False):
 			if temp_url not in urls:
 				urls.append(temp_url)
 		i -= 1
-	
-	# 如果启用了敏感信息检测且没有找到URL，但文件包含JS文件链接，直接返回这些链接
-	if args.sensitive and not urls:
-		js_urls = []
-		for link in links:
-			if link.strip() and (link.lower().endswith('.js') or '.js?' in link.lower()):
-				js_urls.append(link.strip())
-		if js_urls:
-			print(f"[+] 发现 {len(js_urls)} 个JS文件链接，直接用于敏感信息检测")
-			return js_urls
 	
 	return urls
 
@@ -583,6 +590,57 @@ def print_sensitive_results(all_findings):
 if __name__ == "__main__":
 	urllib3.disable_warnings()
 	args = parse_args()
+	
+	# 处理直接传入JS地址的情况
+	if args.js_url:
+		print("[+] 直接分析JS文件: " + args.js_url)
+		# 直接调用敏感信息检测函数
+		detector = SmartSensitiveInfoDetector()
+		all_findings = {}
+		
+		try:
+			# 获取JS文件内容
+			headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+			if args.cookie:
+				headers["Cookie"] = args.cookie
+			
+			response = requests.get(args.js_url, headers=headers, timeout=10, verify=False)
+			if response.status_code != 200:
+				print(f"[-] 无法访问JS文件: HTTP {response.status_code}")
+				sys.exit(1)
+			
+			js_content = response.text
+			if len(js_content) < 100:
+				print("[-] JS文件内容过短，跳过检测")
+				sys.exit(1)
+			
+			print(f"[+] JS文件大小: {len(js_content)} 字符")
+			
+			# 检测敏感信息
+			findings = detector.detect_sensitive_info(js_content)
+			
+			if findings:
+				all_findings[args.js_url] = findings
+				print(f"[!] 发现敏感信息!")
+				for category, values in findings.items():
+					print(f"    {category.upper()}: {len(values)} 处")
+			else:
+				print("[+] 未发现敏感信息")
+			
+			# 输出敏感信息检测结果
+			if all_findings:
+				print_sensitive_results(all_findings)
+			else:
+				print("\n[*] 敏感信息检测完成，未发现敏感信息")
+			
+		except Exception as e:
+			print(f"[-] 分析JS文件时出错: {e}")
+			sys.exit(1)
+		
+		# 直接JS地址分析完成后退出
+		sys.exit(0)
+	
+	# 原有的处理逻辑
 	if args.file == None:
 		if args.deep is not True:
 			urls = find_by_url(args.url)
