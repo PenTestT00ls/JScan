@@ -328,6 +328,7 @@ def find_by_url(url, js = False):
 		html_scripts = html.findAll("script")
 		script_array = {}
 		script_temp = ""
+		js_file_urls = []  # 新增：存储JavaScript文件URL
 		for html_script in html_scripts:
 			script_src = html_script.get("src")
 			if script_src == None:
@@ -335,6 +336,8 @@ def find_by_url(url, js = False):
 			else:
 				purl = process_url(url, script_src)
 				script_array[purl] = Extract_html(purl)
+				# 新增：将JavaScript文件URL添加到结果中
+				js_file_urls.append(purl)
 		script_array[url] = script_temp
 		allurls = []
 		for script in script_array:
@@ -343,6 +346,8 @@ def find_by_url(url, js = False):
 			if len(temp_urls) == 0: continue
 			for temp_url in temp_urls:
 				allurls.append(process_url(script, temp_url)) 
+		# 新增：将JavaScript文件URL添加到allurls中
+		allurls.extend(js_file_urls)
 		result = []
 		for singerurl in allurls:
 			url_raw = urlparse(url)
