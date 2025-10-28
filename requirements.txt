@@ -1,0 +1,22 @@
+# jsFinder.py 依赖包
+# 用于JavaScript文件发现和敏感信息检测工具
+
+# 核心依赖
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+urllib3>=2.0.0
+
+# 标准库依赖（Python内置，无需安装）
+# argparse, sys, re, json, base64, typing, urllib.parse
+
+# 可选依赖（用于高级功能）
+# 如果需要更高级的HTML解析功能，可以添加：
+# lxml>=4.9.0  # 更快的HTML解析器
+
+# 安装命令：
+# pip install -r requirements.txt
+
+# 开发依赖（可选）
+# pytest>=7.4.0      # 测试框架
+# black>=23.0.0      # 代码格式化
+# flake8>=6.0.0      # 代码检查
