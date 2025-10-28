@@ -8,6 +8,7 @@ jsFinder是一个功能强大的安全工具，专门用于从网站中提取Jav
 - **JavaScript链接提取**：从HTML页面中自动发现和提取JavaScript文件链接
 - **子域名发现**：基于提取的链接自动发现相关子域名
 - **深度扫描**：支持深度扫描模式，递归发现更多链接
+- **直接JS文件分析**：支持直接传入JS文件URL进行敏感信息检测（新增功能）
 
 ### 🔒 敏感信息检测（新增）
 - **智能检测**：自动检测JS文件中的6类敏感信息
@@ -63,6 +64,9 @@ python jsFinder.py -u https://example.com -s --sensitive-output results.txt
 
 # 使用文件列表进行敏感信息检测
 python jsFinder.py -f urls.txt -s --sensitive-output results.txt
+
+# 直接分析指定的JS文件进行敏感信息检测（新增功能）
+python jsFinder.py --js-url https://example.com/static/js/app.js
 ```
 
 ### 完整参数说明
@@ -73,6 +77,7 @@ usage: jsFinder.py [-h] [-u URL] [-c COOKIE] [-f FILE]
                    [-d] [-s]
                    [--sensitive-output SENSITIVE_OUTPUT]        
                    [--max-js-files MAX_JS_FILES]
+                   [--js-url JS_URL]
 
 选项:
   -h, --help            显示帮助信息
@@ -91,6 +96,7 @@ usage: jsFinder.py [-h] [-u URL] [-c COOKIE] [-f FILE]
                         敏感信息检测结果输出文件
   --max-js-files MAX_JS_FILES
                         敏感信息检测的最大JS文件数量（默认20）
+  --js-url JS_URL       直接分析指定的JavaScript文件URL进行敏感信息检测
 
 示例: python jsFinder.py -u http://www.baidu.com -s
 ```
@@ -158,6 +164,39 @@ PASSWORD (2 处):
 [+] 敏感信息检测结果已保存到: scan_results.txt
 ```
 
+### 示例3：直接分析JS文件（新增功能）
+
+```bash
+python jsFinder.py --js-url https://target.com/static/js/config.js
+```
+
+输出：
+```
+[+] 直接分析JS文件: https://target.com/static/js/config.js
+[+] JS文件大小: 1515 字符
+[!] 发现敏感信息!
+    PASSWORD: 2 处
+    API_KEY: 1 处
+
+[!] 敏感信息检测报告
+================================================================================
+JS文件: https://target.com/static/js/config.js
+------------------------------------------------------------
+PASSWORD (2 处):
+  - 行号: 23
+    隐藏值: admin_**********123
+    完整值: admin_password123
+    上下文: var adminConfig = { username: "admin", password: "admin_password123" };
+
+API_KEY (1 处):
+  - 行号: 45
+    隐藏值: sk_test_**********cdef
+    完整值: sk_test_1234567890abcdef
+    上下文: const apiKey = "sk_test_1234567890abcdef";
+
+[*] 敏感信息检测完成
+```
+
 ## 输出格式
 
 ### URL和子域名输出
@@ -221,7 +260,11 @@ A: 工具已禁用SSL验证，如仍有问题请检查网络连接
 
 ## 更新日志
 
-### v2.0 (最新)
+### v2.1 (最新)
+- ✅ 新增`--js-url`参数，支持直接分析指定的JS文件进行敏感信息检测
+- ✅ 优化直接JS文件分析流程，提高检测效率
+
+### v2.0
 - ✅ 新增敏感信息检测功能
 - ✅ 智能误报控制机制
 - ✅ 详细的检测报告输出
