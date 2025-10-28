@@ -1,434 +1,204 @@
-#!/usr/bin/env python3
-"""
-JS敏感信息检测工具 - 支持认证扫描和增强JS提取
-"""
+#!/usr/bin/env python"
+# coding: utf-8
+# By Threezh1
+# https://threezh1.github.io/
 
-import requests
-import re
-import json
-import time
-import urllib.parse
-from typing import List, Dict, Tuple
-import argparse
-import sys
-import os
+import requests, argparse, sys, re, json
+from requests.packages import urllib3
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+from typing import List, Dict, Tuple, Optional
 
-class JSSensitiveInfoDetector:
-    def __init__(self, timeout=10, user_agent=None, cookies=None, headers=None, auth_token=None):
-        self.timeout = timeout
-        self.session = requests.Session()
-        
-        # 设置请求头
-        default_headers = {
-            'User-Agent': user_agent or 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-        }
-        
-        if headers:
-            default_headers.update(headers)
-        
-        self.session.headers.update(default_headers)
-        
-        # 设置Cookie
-        if cookies:
-            if isinstance(cookies, str):
-                self.session.headers.update({'Cookie': cookies})
-            elif isinstance(cookies, dict):
-                self.session.cookies.update(cookies)
-        
-        # 设置认证令牌
-        if auth_token:
-            self.session.headers.update({'Authorization': f'Bearer {auth_token}'})
-        
-        # 定义敏感信息正则表达式模式
-        self.sensitive_patterns = {
-            'password': [
-                r'password\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'pwd\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'pass\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'password\s*:\s*([^\s,]+)',
-                r'passwd\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'psw\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'login_password\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'user_password\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'admin_password\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'api_key': [
-                r'api[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'apikey\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'api[_-]?secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'app[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'app[_-]?secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'client[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'client[_-]?secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'service[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'secret': [
-                r'secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'secret[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'client_secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'app_secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'private[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'shared[_-]?secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'encryption[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'token': [
-                r'token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'access[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'auth[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'refresh[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'bearer[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'session[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'csrf[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'xsrf[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'security[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'auth': [
-                r'authorization\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'auth\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'authentication\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'login\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'credential\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'basic[_-]?auth\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'jwt': [
-                r'eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+',
-                r'eyJhbGciOiJ[^\s\']+',
-            ],
-            'aws_keys': [
-                r'AKIA[0-9A-Z]{16}',
-                r'aws[_-]?access[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'aws[_-]?secret[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'aws[_-]?session[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'cloud_keys': [
-                # Google Cloud
-                r'AIza[0-9A-Za-z_-]{35}',
-                r'ya29\.[0-9A-Za-z_-]+',
-                # Azure
-                r'xoxb-[0-9]{11}-[0-9]{11}-[0-9a-zA-Z]{24}',
-                # DigitalOcean
-                r'dop_v1_[a-f0-9]{64}',
-                # Stripe
-                r'sk_live_[0-9a-zA-Z]{24}',
-                r'pk_live_[0-9a-zA-Z]{24}',
-                r'sk_test_[0-9a-zA-Z]{24}',
-                r'pk_test_[0-9a-zA-Z]{24}',
-                # Slack
-                r'xox[abprs]-[0-9a-zA-Z]{10,48}',
-                # GitHub
-                r'gh[oprs]_[0-9a-zA-Z]{36}',
-                r'github_pat_[0-9a-zA-Z]{22}_[0-9a-zA-Z]{59}',
-            ],
-            'database_url': [
-                r'mongodb[+]srv://[^\s\'"]+',
-                r'postgresql://[^\s\'"]+',
-                r'mysql://[^\s\'"]+',
-                r'redis://[^\s\'"]+',
-                r'sqlserver://[^\s\'"]+',
-                r'oracle://[^\s\'"]+',
-                r'jdbc:[^\s\'"]+',
-                r'database[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'connection[_-]?string\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'db[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'email_credentials': [
-                r'smtp[_-]?password\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'email[_-]?pass\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'mail[_-]?password\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'smtp[_-]?user\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'smtp[_-]?username\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'mail[_-]?user\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'private_key': [
-                r'-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----',
-                r'-----BEGIN PGP PRIVATE KEY BLOCK-----',
-                r'-----BEGIN PRIVATE KEY-----',
-                r'-----BEGIN ENCRYPTED PRIVATE KEY-----',
-            ],
-            'oauth': [
-                r'oauth[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'oauth[_-]?secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'oauth[_-]?consumer[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'oauth[_-]?consumer[_-]?secret\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'webhook': [
-                r'webhook[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'discord[_-]?webhook\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'slack[_-]?webhook\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'teams[_-]?webhook\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'social_media': [
-                r'facebook[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'twitter[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'instagram[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'linkedin[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'google[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'payment': [
-                r'stripe[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'paypal[_-]?key\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'braintree[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'credit[_-]?card\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'payment[_-]?token\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
-            'config': [
-                r'config\s*[=:]\s*{[\s\S]*?}',
-                r'configuration\s*[=:]\s*{[\s\S]*?}',
-                r'env\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'environment\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'debug\s*[=:]\s*[\'"](true|false)[\'"]',
-                r'production\s*[=:]\s*[\'"](true|false)[\'"]',
-            ],
-            'url_endpoints': [
-                r'endpoint\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'base[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'api[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'service[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'backend[_-]?url\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-                r'graphql[_-]?endpoint\s*[=:]\s*[\'"]([^\'"]+)[\'"]',
-            ],
+class SmartSensitiveInfoDetector:
+    """智能敏感信息检测器 - 解决误报问题"""
     
-            'ip_addresses_private': [
-                r'(?:10|127|192\.168|172\.(?:1[6-9]|2[0-9]|3[0-1]))\.\d{1,3}\.\d{1,3}',
-                r'localhost',
-                r'0\.0\.0\.0',
-            ],
-            'sensitive_comments': [
-                r'//\s*(TODO|FIXME|HACK|XXX|BUG)\s*:.*$',
-                r'/\*.*?(TODO|FIXME|HACK|XXX|BUG).*?\*/',
-                r'#\s*(TODO|FIXME|HACK|XXX|BUG)\s*:.*$',
-            ],
-            'file_paths': [
-                r'/[a-zA-Z0-9_\-./]*\.(key|pem|crt|cer|pfx|p12|p7b)',
-                r'/[a-zA-Z0-9_\-./]*\.(env|config|conf|ini|properties)',
-                r'/[a-zA-Z0-9_\-./]*\.(log|txt|csv|json|xml)',
-            ]
-        }
-
-    def extract_js_paths(self, html_content: str, base_url: str) -> List[str]:
-        """
-        从HTML内容中提取JS文件路径并拼接完整URL
-        """
-        js_patterns = [
-            # <script> 标签中的src属性
-            r'<script[^>]*?src\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*>',
-            
-            # <link> 标签中的href属性 - 更宽松的匹配
-            r'<link[^>]*?href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*?rel\s*=\s*["\']?prefetch["\']?[^>]*>',
-            r'<link[^>]*?rel\s*=\s*["\']?prefetch["\']?[^>]*?href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*>',
-            
-            r'<link[^>]*?href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*?rel\s*=\s*["\']?preload["\']?[^>]*>',
-            r'<link[^>]*?rel\s*=\s*["\']?preload["\']?[^>]*?href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*>',
-            
-            r'<link[^>]*?href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*?rel\s*=\s*["\']?modulepreload["\']?[^>]*>',
-            r'<link[^>]*?rel\s*=\s*["\']?modulepreload["\']?[^>]*?href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?[^>]*>',
-            
-            # 通用href匹配（兜底）
-            r'href\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?',
-            
-            # ES6 import 语句
-            r'import\s+(?:\w+\s+from\s+)?["\']([^"\']*\.js)["\']',
-            r'import\s*\(["\']([^"\']*\.js)["\']\)',
-            
-            # CommonJS require
-            r'require\s*\(\s*["\']([^"\']*\.js)["\']\s*\)',
-            
-            # src属性 (通用)
-            r'src\s*=\s*["\']?([^"\'\s>]*?\.js(?:\?[^"\'\s>]*)?)["\']?',
-        ]
-        
-        js_urls = []
-        
-        for pattern in js_patterns:
-            matches = re.finditer(pattern, html_content, re.IGNORECASE)
-            for match in matches:
-                js_path = match.group(1).strip()
-                if not js_path or not js_path.endswith('.js'):
-                    continue
-                    
-                # 清理路径中的多余字符
-                js_path = js_path.split(' ')[0].split('>')[0]
-                
-                # 拼接完整URL
-                full_url = self.build_full_url(js_path, base_url)
-                if full_url and full_url not in js_urls:
-                    js_urls.append(full_url)
-                    print(f"[+] 提取到JS路径: {js_path} -> {full_url}")
-        
-        return js_urls
-
-    def build_full_url(self, js_path: str, base_url: str) -> str:
-        """
-        根据相对路径构建完整URL
-        """
-        if not js_path or js_path.startswith(('javascript:', 'data:')):
-            return None
-        
-        # 如果已经是完整URL，直接返回
-        if js_path.startswith(('http://', 'https://')):
-            return js_path
-        
-        # 处理双斜杠开头的URL
-        if js_path.startswith('//'):
-            scheme = urllib.parse.urlparse(base_url).scheme
-            return f"{scheme}:{js_path}" if scheme else f"https:{js_path}"
-        
-        # 处理绝对路径
-        if js_path.startswith('/'):
-            return urllib.parse.urljoin(base_url, js_path)
-        
-        # 处理相对路径
-        if not js_path.startswith(('http://', 'https://', '/', '//')):
-            return urllib.parse.urljoin(base_url, js_path)
-        
-        return None
-
-    def debug_html_content(self, html_content: str, base_url: str):
-        """调试HTML内容，找出所有可能的JS链接"""
-        print("[*] 开始调试HTML内容...")
-        
-        # 查找所有包含js的字符串
-        js_related_patterns = [
-            r'href\s*=\s*[^>]*\.js[^>]*',
-            r'src\s*=\s*[^>]*\.js[^>]*',
-            r'<link[^>]*>',
-            r'<script[^>]*>',
-        ]
-        
-        found_count = 0
-        for pattern in js_related_patterns:
-            matches = re.finditer(pattern, html_content, re.IGNORECASE)
-            for match in matches:
-                content = match.group(0)
-                print(f"[调试] 找到可能包含JS的标签: {content}")
-                
-                # 尝试从这些内容中提取JS路径
-                if 'href' in content and '.js' in content:
-                    href_match = re.search(r'href\s*=\s*["\']?([^"\'\s>]*\.js[^"\'\s>]*)', content, re.IGNORECASE)
-                    if href_match:
-                        js_path = href_match.group(1)
-                        full_url = self.build_full_url(js_path, base_url)
-                        print(f"[调试] 从href提取: {js_path} -> {full_url}")
-                        found_count += 1
-                
-                if 'src' in content and '.js' in content:
-                    src_match = re.search(r'src\s*=\s*["\']?([^"\'\s>]*\.js[^"\'\s>]*)', content, re.IGNORECASE)
-                    if src_match:
-                        js_path = src_match.group(1)
-                        full_url = self.build_full_url(js_path, base_url)
-                        print(f"[调试] 从src提取: {js_path} -> {full_url}")
-                        found_count += 1
-        
-        if found_count == 0:
-            print("[调试] 未找到任何包含JS的标签")
-
-    def load_cookies_from_file(self, file_path: str):
-        """从文件加载Cookie"""
-        try:
-            if file_path.endswith('.json'):
-                with open(file_path, 'r') as f:
-                    cookies_dict = json.load(f)
-                    self.session.cookies.update(cookies_dict)
-            else:
-                with open(file_path, 'r') as f:
-                    cookie_str = f.read().strip()
-                    self.session.headers.update({'Cookie': cookie_str})
-            print(f"[+] 从文件加载Cookie: {file_path}")
-        except Exception as e:
-            print(f"[-] 加载Cookie文件失败: {e}")
-
-    def login_with_credentials(self, login_url: str, username: str, password: str, 
-                             username_field='username', password_field='password',
-                             extra_data=None):
-        """使用用户名密码登录"""
-        try:
-            login_data = {
-                username_field: username,
-                password_field: password
+    def __init__(self):
+        # 定义敏感信息模式，包含上下文验证
+        self.sensitive_patterns = {
+            'password': {
+                'patterns': [
+                    # 密码字段 - 需要验证后面跟着的是否是真正的密码值
+                    r'password\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'pwd\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'pass\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'password\s*:\s*([^\s,]+)',
+                    r'passwd\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'psw\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'login_password\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'user_password\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'admin_password\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_password
+            },
+            'api_key': {
+                'patterns': [
+                    r'api[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'apikey\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'api[_-]?secret\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'app[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'app[_-]?secret\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'client[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'client[_-]?secret\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'service[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_api_key
+            },
+            'token': {
+                'patterns': [
+                    r'token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'access[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'auth[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'refresh[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'bearer[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'session[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_token
+            },
+            'jwt': {
+                'patterns': [
+                    r'eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+',
+                    r'eyJhbGciOiJ[^\s\']+',
+                ],
+                'validator': self._validate_jwt
+            },
+            'aws_keys': {
+                'patterns': [
+                    r'AKIA[0-9A-Z]{16}',
+                    r'aws[_-]?access[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'aws[_-]?secret[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_aws_key
+            },
+            'database_url': {
+                'patterns': [
+                    r'mongodb[+]srv://[^\s\'\"]+',
+                    r'postgresql://[^\s\'\"]+',
+                    r'mysql://[^\s\'\"]+',
+                    r'redis://[^\s\'\"]+',
+                    r'database[_-]?url\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_database_url
             }
-            
-            if extra_data:
-                login_data.update(extra_data)
-            
-            print(f"[*] 尝试登录: {login_url}")
-            response = self.session.post(login_url, data=login_data, timeout=self.timeout)
-            
-            if response.status_code == 200:
-                print("[+] 登录请求成功")
-                if "login" not in response.url.lower() and "error" not in response.text.lower():
-                    print("[+] 登录可能成功")
-                    return True
-                else:
-                    print("[-] 登录可能失败")
-                    return False
-            else:
-                print(f"[-] 登录请求失败: HTTP {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"[-] 登录过程中出错: {e}")
+        }
+    
+    def _validate_password(self, value: str, context: str) -> bool:
+        """验证密码值是否真实"""
+        # 排除常见的测试值、占位符和空值
+        fake_passwords = ['', 'password', 'pass', 'pwd', '123456', 'test', 'demo', 
+                         'changeme', 'admin', 'user', 'secret', 'none', 'null',
+                         'undefined', '********', '******']
+        
+        if not value or len(value) < 3:
             return False
-
-    def extract_js_links(self, url: str) -> List[str]:
-        """从网页中提取所有JS链接（增强版）"""
-        js_links = []
+        
+        if value.lower() in fake_passwords:
+            return False
+        
+        # 检查是否是合理的密码格式（至少包含字母和数字，长度大于6）
+        if len(value) >= 6 and (any(c.isalpha() for c in value) and any(c.isdigit() for c in value)):
+            return True
+        
+        # 检查是否是哈希值（通常以$开头或包含特殊字符）
+        if value.startswith('$') or any(c in value for c in ['$', '*', '@', '#']):
+            return True
+        
+        return False
+    
+    def _validate_api_key(self, value: str, context: str) -> bool:
+        """验证API密钥格式"""
+        if not value or len(value) < 10:
+            return False
+        
+        # API密钥通常较长且包含字母数字
+        if len(value) >= 20 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value):
+            return True
+        
+        # 检查是否是已知的API密钥格式
+        if re.match(r'^[a-zA-Z0-9_-]{20,}$', value):
+            return True
+        
+        return False
+    
+    def _validate_token(self, value: str, context: str) -> bool:
+        """验证令牌格式"""
+        if not value or len(value) < 10:
+            return False
+        
+        # 令牌通常较长
+        if len(value) >= 20:
+            return True
+        
+        # 检查是否是十六进制格式
+        if re.match(r'^[a-fA-F0-9]{32,}$', value):
+            return True
+        
+        return False
+    
+    def _validate_jwt(self, value: str, context: str) -> bool:
+        """验证JWT格式"""
+        # JWT格式验证
+        parts = value.split('.')
+        if len(parts) != 3:
+            return False
+        
+        # 检查每个部分是否包含有效的base64字符
+        import base64
         try:
-            response = self.session.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            
-            print(f"[+] 访问成功: {url} (HTTP {response.status_code})")
-            
-            # 检查是否被重定向到登录页面
-            if any(keyword in response.url.lower() for keyword in ['login', 'signin', 'auth']):
-                print("[-] 被重定向到登录页面，可能认证失败")
-                return []
-            
-            # 使用增强的提取函数
-            js_links = self.extract_js_paths(response.text, response.url)
-            
-            # 如果没有找到JS链接，尝试调试模式
-            if not js_links:
-                print("[-] 未找到JS文件链接，尝试调试模式...")
-                self.debug_html_content(response.text, response.url)
-            
-            print(f"[+] 从 {url} 中提取到 {len(js_links)} 个JS文件链接")
-            
-        except requests.RequestException as e:
-            print(f"[-] 无法访问 {url}: {e}")
-        except Exception as e:
-            print(f"[-] 提取JS链接时出错: {e}")
-            
-        return js_links
-
-    def fetch_js_content(self, js_url: str) -> str:
-        """获取JS文件内容（使用认证会话）"""
-        try:
-            response = self.session.get(js_url, timeout=self.timeout)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as e:
-            print(f"[-] 无法获取JS文件 {js_url}: {e}")
-            return ""
-
-    def detect_sensitive_info(self, js_content: str) -> Dict[str, List[str]]:
-        """检测JS内容中的敏感信息"""
+            for part in parts:
+                base64.urlsafe_b64decode(part + '===')
+            return True
+        except:
+            return False
+    
+    def _validate_aws_key(self, value: str, context: str) -> bool:
+        """验证AWS密钥格式"""
+        # AWS访问密钥ID格式
+        if re.match(r'^AKIA[0-9A-Z]{16}$', value):
+            return True
+        
+        # AWS秘密访问密钥格式
+        if len(value) >= 40 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value):
+            return True
+        
+        return False
+    
+    def _validate_database_url(self, value: str, context: str) -> bool:
+        """验证数据库URL格式"""
+        # 检查是否包含数据库连接信息
+        if any(db in value.lower() for db in ['mongodb', 'postgresql', 'mysql', 'redis']):
+            # 检查是否包含认证信息
+            if '://' in value and ('@' in value or 'password' in value.lower()):
+                return True
+        
+        return False
+    
+    def detect_sensitive_info(self, content: str) -> Dict[str, List[Dict]]:
+        """检测敏感信息，包含上下文验证"""
         findings = {}
         
-        for category, patterns in self.sensitive_patterns.items():
+        for category, config in self.sensitive_patterns.items():
             category_findings = []
-            for pattern in patterns:
-                matches = re.finditer(pattern, js_content, re.IGNORECASE)
+            
+            for pattern in config['patterns']:
+                matches = re.finditer(pattern, content, re.IGNORECASE)
+                
                 for match in matches:
                     if match.groups():
                         value = match.group(1)
                     else:
                         value = match.group(0)
                     
-                    if value and len(value) > 3 and value not in [v['full_value'] for v in category_findings]:
+                    # 获取匹配周围的上下文（前后50个字符）
+                    start = max(0, match.start() - 50)
+                    end = min(len(content), match.end() + 50)
+                    context = content[start:end]
+                    
+                    # 使用验证器检查是否是真正的敏感信息
+                    if config['validator'](value, context):
+                        # 计算行号
+                        line_number = content[:match.start()].count('\n') + 1
+                        
+                        # 创建屏蔽值用于显示
                         if len(value) > 8:
                             masked_value = value[:4] + '*' * (len(value) - 8) + value[-4:]
                         else:
@@ -437,7 +207,9 @@ class JSSensitiveInfoDetector:
                         category_findings.append({
                             'full_value': value,
                             'masked_value': masked_value,
-                            'position': f"第{match.start()}字符附近"
+                            'line_number': line_number,
+                            'position': match.start(),
+                            'context': context.strip()
                         })
             
             if category_findings:
@@ -445,172 +217,384 @@ class JSSensitiveInfoDetector:
         
         return findings
 
-    def scan_website(self, url: str, output_file: str = None, max_js_files: int = 50):
-        """主扫描函数"""
-        print(f"[*] 开始扫描: {url}")
-        print(f"[*] 认证状态: {'已认证' if self.session.cookies else '未认证'}")
-        
-        print("[*] 提取JS文件链接中...")
-        js_links = self.extract_js_links(url)
-        
-        if not js_links:
-            print("[-] 未找到JS文件链接")
-            return
-        
-        # 限制扫描的JS文件数量
-        if len(js_links) > max_js_files:
-            print(f"[!] 发现 {len(js_links)} 个JS文件，限制扫描前 {max_js_files} 个")
-            js_links = js_links[:max_js_files]
-        
-        all_findings = {}
-        scanned_count = 0
-        error_count = 0
-        
-        for i, js_url in enumerate(js_links, 1):
-            print(f"\n[{i}/{len(js_links)}] 分析: {js_url}")
-            
-            content = self.fetch_js_content(js_url)
-            if not content:
-                error_count += 1
-                continue
-            
-            scanned_count += 1
-            findings = self.detect_sensitive_info(content)
-            
-            if findings:
-                all_findings[js_url] = findings
-                print(f"[!] 发现敏感信息!")
-                for category, values in findings.items():
-                    print(f"    {category.upper()}: {len(values)} 处")
-            else:
-                print("[+] 未发现敏感信息")
-            
-            time.sleep(0.5)
-        
-        # 输出扫描统计
-        print(f"\n[*] 扫描完成: 成功扫描 {scanned_count}/{len(js_links)} 个JS文件")
-        if error_count > 0:
-            print(f"[-] 无法访问 {error_count} 个JS文件")
-        
-        # 输出结果
-        self.print_results(all_findings, output_file)
+def parse_args():
+    parser = argparse.ArgumentParser(epilog='\tExample: \r\npython ' + sys.argv[0] + " -u http://www.baidu.com -s")
+    parser.add_argument("-u", "--url", help="The website")
+    parser.add_argument("-c", "--cookie", help="The website cookie")
+    parser.add_argument("-f", "--file", help="The file contains url or js")
+    parser.add_argument("-ou", "--outputurl", help="Output file name. ")
+    parser.add_argument("-os", "--outputsubdomain", help="Output file name. ")
+    parser.add_argument("-j", "--js", help="Find in js file", action="store_true")
+    parser.add_argument("-d", "--deep",help="Deep find", action="store_true")
+    
+    # 新增参数：敏感信息检测
+    parser.add_argument("-s", "--sensitive", help="Enable sensitive information detection", action="store_true")
+    parser.add_argument("--sensitive-output", help="Output file for sensitive information findings")
+    parser.add_argument("--max-js-files", type=int, default=20, help="Maximum number of JS files to analyze for sensitive info")
+    
+    return parser.parse_args()
 
-    def print_results(self, findings: Dict, output_file: str = None):
-        """打印和保存结果"""
-        output_lines = []
-        
-        if not findings:
-            print("\n[*] 扫描完成，未发现敏感信息")
-            return
-        
-        print("\n" + "="*80)
-        print("[!] 敏感信息检测报告")
-        print("="*80)
-        
-        total_findings = sum(len(categories) for categories in findings.values())
-        output_lines.append(f"总计发现敏感信息的JS文件: {len(findings)} 个")
-        output_lines.append(f"总计敏感信息条目: {total_findings} 处\n")
-        
-        for js_url, categories in findings.items():
-            output_lines.append(f"\nJS文件: {js_url}")
-            output_lines.append("-" * 60)
-            
-            for category, values in categories.items():
-                output_lines.append(f"\n{category.upper()} ({len(values)} 处):")
-                for value_info in values:
-                    output_lines.append(f"  - 位置: {value_info['position']}")
-                    output_lines.append(f"    隐藏值: {value_info['masked_value']}")
-                    output_lines.append(f"    完整值: {value_info['full_value']}")
-            
-            output_lines.append("\n")
-        
-        # 输出到控制台
-        for line in output_lines:
-            print(line)
-        
-        # 保存到文件
-        if output_file:
-            try:
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write("\n".join(output_lines))
-                print(f"\n[+] 结果已保存到: {output_file}")
-            except Exception as e:
-                print(f"[-] 保存文件失败: {e}")
+# Regular expression comes from https://github.com/GerbenJavado/LinkFinder
+def extract_URL(JS):
+	pattern_raw = r"""
+	  (?:"|')                               # Start newline delimiter
+	  (
+	    ((?:[a-zA-Z]{1,10}://|//)           # Match a scheme [a-Z]*1-10 or //
+	    [^"'/]{1,}\.                        # Match a domainname (any character + dot)
+	    [a-zA-Z]{2,}[^"']{0,})              # The domainextension and/or path
+	    |
+	    ((?:/|\.\./|\./)                    # Start with /,../,./
+	    [^"'><,;| *()(%%$^/\\\[\]]          # Next character can't be...
+	    [^"'><,;|()]{1,})                   # Rest of the characters can't be
+	    |
+	    ([a-zA-Z0-9_\-/]{1,}/               # Relative endpoint with /
+	    [a-zA-Z0-9_\-/]{1,}                 # Resource name
+	    \.(?:[a-zA-Z]{1,4}|action)          # Rest + extension (length 1-4 or action)
+	    (?:[\?|/][^"|']{0,}|))              # ? mark with parameters
+	    |
+	    ([a-zA-Z0-9_\-]{1,}                 # filename
+	    \.(?:php|asp|aspx|jsp|json|
+	         action|html|js|txt|xml)             # . + extension
+	    (?:\?[^"|']{0,}|))                  # ? mark with parameters
+	  )
+	  (?:"|')                               # End newline delimiter
+	"""
+	pattern = re.compile(pattern_raw, re.VERBOSE)
+	result = re.finditer(pattern, str(JS))
+	if result == None:
+		return None
+	js_url = []
+	return [match.group().strip('"').strip("'") for match in result
+		if match.group() not in js_url]
 
-    
+# Get the page source
+def Extract_html(URL):
+	header = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.108 Safari/537.36",
+	"Cookie": args.cookie}
+	try:
+		raw = requests.get(URL, headers = header, timeout=3, verify=False)
+		raw = raw.content.decode("utf-8", "ignore")
+		return raw
+	except:
+		return None
 
-def main():
-    parser = argparse.ArgumentParser(description='JS敏感信息检测工具 - 支持认证扫描')
-    parser.add_argument('url', help='要扫描的目标URL')
-    parser.add_argument('-o', '--output', help='输出文件路径')
-    parser.add_argument('-t', '--timeout', type=int, default=10, help='请求超时时间(秒)')
-    parser.add_argument('--user-agent', help='自定义User-Agent')
-    parser.add_argument('--max-js-files', type=int, default=50, help='最大扫描JS文件数量')
-    
-    # 认证相关参数
-    parser.add_argument('--cookies', help='Cookie字符串，格式: "name=value; name2=value2"')
-    parser.add_argument('--cookies-file', help='Cookie文件路径(.json或.txt)')
-    parser.add_argument('--auth-token', help='Bearer认证令牌')
-    parser.add_argument('--headers-file', help='自定义请求头JSON文件')
-    
-    # 登录相关参数
-    parser.add_argument('--login-url', help='登录页面URL')
-    parser.add_argument('--username', help='登录用户名')
-    parser.add_argument('--password', help='登录密码')
-    parser.add_argument('--username-field', default='username', help='用户名表单字段名')
-    parser.add_argument('--password-field', default='password', help='密码表单字段名')
-    
-    
-    args = parser.parse_args()
-    
-    if not args.url.startswith(('http://', 'https://')):
-        args.url = 'https://' + args.url
-    
-    # 处理请求头
-    headers = {}
-    if args.headers_file:
-        try:
-            with open(args.headers_file, 'r') as f:
-                headers = json.load(f)
-        except Exception as e:
-            print(f"[-] 加载请求头文件失败: {e}")
-            sys.exit(1)
-    
-    # 创建检测器实例
-    detector = JSSensitiveInfoDetector(
-        timeout=args.timeout,
-        user_agent=args.user_agent,
-        cookies=args.cookies,
-        headers=headers,
-        auth_token=args.auth_token
-    )
-    
-    # 从文件加载Cookie
-    if args.cookies_file:
-        detector.load_cookies_from_file(args.cookies_file)
-    
-    # 执行登录
-    if args.login_url and args.username and args.password:
-        success = detector.login_with_credentials(
-            args.login_url,
-            args.username,
-            args.password,
-            args.username_field,
-            args.password_field
-        )
-        if not success:
-            print("[-] 登录失败，继续尝试扫描...")
-    
-    
-    
-    try:
-        detector.scan_website(args.url, args.output, args.max_js_files)
-    except KeyboardInterrupt:
-        print("\n[!] 用户中断扫描")
-        sys.exit(1)
-    except Exception as e:
-        print(f"[-] 扫描过程中出错: {e}")
-        sys.exit(1)
+# Handling relative URLs
+def process_url(URL, re_URL):
+	black_url = ["javascript:"]	# Add some keyword for filter url.
+	URL_raw = urlparse(URL)
+	ab_URL = URL_raw.netloc
+	host_URL = URL_raw.scheme
+	if re_URL[0:2] == "//":
+		result = host_URL  + ":" + re_URL
+	elif re_URL[0:4] == "http":
+		result = re_URL
+	elif re_URL[0:2] != "//" and re_URL not in black_url:
+		if re_URL[0:1] == "/":
+			result = host_URL + "://" + ab_URL + re_URL
+		else:
+			if re_URL[0:1] == ".":
+				if re_URL[0:2] == "..":
+					result = host_URL + "://" + ab_URL + re_URL[2:]
+				else:
+					result = host_URL + "://" + ab_URL + re_URL[1:]
+			else:
+				result = host_URL + "://" + ab_URL + "/" + re_URL
+	else:
+		result = URL
+	return result
+
+def find_last(string,str):
+	positions = []
+	last_position=-1
+	while True:
+		position = string.find(str,last_position+1)
+		if position == -1:break
+		last_position = position
+		positions.append(position)
+	return positions
+
+def find_by_url(url, js = False):
+	if js == False:
+		try:
+			print("url:" + url)
+		except:
+			print("Please specify a URL like https://www.baidu.com")
+		html_raw = Extract_html(url)
+		if html_raw == None: 
+			print("Fail to access " + url)
+			return None
+		#print(html_raw)
+		html = BeautifulSoup(html_raw, "html.parser")
+		html_scripts = html.findAll("script")
+		script_array = {}
+		script_temp = ""
+		for html_script in html_scripts:
+			script_src = html_script.get("src")
+			if script_src == None:
+				script_temp += html_script.get_text() + "\n"
+			else:
+				purl = process_url(url, script_src)
+				script_array[purl] = Extract_html(purl)
+		script_array[url] = script_temp
+		allurls = []
+		for script in script_array:
+			#print(script)
+			temp_urls = extract_URL(script_array[script])
+			if len(temp_urls) == 0: continue
+			for temp_url in temp_urls:
+				allurls.append(process_url(script, temp_url)) 
+		result = []
+		for singerurl in allurls:
+			url_raw = urlparse(url)
+			domain = url_raw.netloc
+			positions = find_last(domain, ".")
+			miandomain = domain
+			if len(positions) > 1:miandomain = domain[positions[-2] + 1:]
+			#print(miandomain)
+			suburl = urlparse(singerurl)
+			subdomain = suburl.netloc
+			#print(singerurl)
+			if miandomain in subdomain or subdomain.strip() == "":
+				if singerurl.strip() not in result:
+					result.append(singerurl)
+		return result
+	return sorted(set(extract_URL(Extract_html(url)))) or None
+
+
+def find_subdomain(urls, mainurl):
+	url_raw = urlparse(mainurl)
+	domain = url_raw.netloc
+	miandomain = domain
+	positions = find_last(domain, ".")
+	if len(positions) > 1:miandomain = domain[positions[-2] + 1:]
+	subdomains = []
+	for url in urls:
+		suburl = urlparse(url)
+		subdomain = suburl.netloc
+		#print(subdomain)
+		if subdomain.strip() == "": continue
+		if miandomain in subdomain:
+			if subdomain not in subdomains:
+				subdomains.append(subdomain)
+	return subdomains
+
+def find_by_url_deep(url):
+	html_raw = Extract_html(url)
+	if html_raw == None: 
+		print("Fail to access " + url)
+		return None
+	html = BeautifulSoup(html_raw, "html.parser")
+	html_as = html.findAll("a")
+	links = []
+	for html_a in html_as:
+		src = html_a.get("href")
+		if src == "" or src == None: continue
+		link = process_url(url, src)
+		if link not in links:
+			links.append(link)
+	if links == []: return None
+	print("ALL Find " + str(len(links)) + " links")
+	urls = []
+	i = len(links)
+	for link in links:
+		temp_urls = find_by_url(link)
+		if temp_urls == None: continue
+		print("Remaining " + str(i) + " | Find " + str(len(temp_urls)) + " URL in " + link)
+		for temp_url in temp_urls:
+			if temp_url not in urls:
+				urls.append(temp_url)
+		i -= 1
+	return urls
+
+	
+def find_by_file(file_path, js=False):
+	with open(file_path, "r") as fobject:
+		links = fobject.read().split("\n")
+	if links == []: return None
+	print("ALL Find " + str(len(links)) + " links")
+	urls = []
+	i = len(links)
+	for link in links:
+		if js == False:
+			temp_urls = find_by_url(link)
+		else:
+			temp_urls = find_by_url(link, js=True)
+		if temp_urls == None: continue
+		print(str(i) + " Find " + str(len(temp_urls)) + " URL in " + link)
+		for temp_url in temp_urls:
+			if temp_url not in urls:
+				urls.append(temp_url)
+		i -= 1
+	
+	# 如果启用了敏感信息检测且没有找到URL，但文件包含JS文件链接，直接返回这些链接
+	if args.sensitive and not urls:
+		js_urls = []
+		for link in links:
+			if link.strip() and (link.lower().endswith('.js') or '.js?' in link.lower()):
+				js_urls.append(link.strip())
+		if js_urls:
+			print(f"[+] 发现 {len(js_urls)} 个JS文件链接，直接用于敏感信息检测")
+			return js_urls
+	
+	return urls
+
+def giveresult(urls, domian):
+	if urls == None:
+		return None
+	print("Find " + str(len(urls)) + " URL:")
+	content_url = ""
+	content_subdomain = ""
+	for url in urls:
+		content_url += url + "\n"
+		print(url)
+	subdomains = find_subdomain(urls, domian)
+	print("\nFind " + str(len(subdomains)) + " Subdomain:")
+	for subdomain in subdomains:
+		content_subdomain += subdomain + "\n"
+		print(subdomain)
+	if args.outputurl != None:
+		with open(args.outputurl, "a", encoding='utf-8') as fobject:
+			fobject.write(content_url)
+		print("\nOutput " + str(len(urls)) + " urls")
+		print("Path:" + args.outputurl)
+	if args.outputsubdomain != None:
+		with open(args.outputsubdomain, "a", encoding='utf-8') as fobject:
+			fobject.write(content_subdomain)
+		print("\nOutput " + str(len(subdomains)) + " subdomains")
+		print("Path:" + args.outputsubdomain)
+
+	# 如果启用了敏感信息检测，执行敏感信息扫描
+	if args.sensitive:
+		print("\n" + "="*60)
+		print("开始敏感信息检测...")
+		print("="*60)
+		sensitive_scan(urls)
+
+def sensitive_scan(urls):
+	"""执行敏感信息检测"""
+	detector = SmartSensitiveInfoDetector()
+	all_findings = {}
+	js_urls = []
+	
+	# 从URL列表中筛选出JS文件
+	for url in urls:
+		if url.lower().endswith('.js') or '.js?' in url.lower():
+			js_urls.append(url)
+	
+	if not js_urls:
+		print("[-] 未发现JS文件，无法进行敏感信息检测")
+		return
+	
+	print(f"[+] 发现 {len(js_urls)} 个JS文件，开始敏感信息检测...")
+	
+	# 限制扫描的JS文件数量
+	if len(js_urls) > args.max_js_files:
+		print(f"[!] JS文件数量超过限制，仅扫描前 {args.max_js_files} 个文件")
+		js_urls = js_urls[:args.max_js_files]
+	
+	# 扫描每个JS文件
+	for i, js_url in enumerate(js_urls, 1):
+		print(f"\n[{i}/{len(js_urls)}] 分析JS文件: {js_url}")
+		
+		try:
+			# 获取JS文件内容
+			headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+			if args.cookie:
+				headers["Cookie"] = args.cookie
+			
+			response = requests.get(js_url, headers=headers, timeout=10, verify=False)
+			if response.status_code != 200:
+				print(f"[-] 无法访问JS文件: HTTP {response.status_code}")
+				continue
+			
+			js_content = response.text
+			if len(js_content) < 100:
+				print("[-] JS文件内容过短，跳过检测")
+				continue
+			
+			# 检测敏感信息
+			findings = detector.detect_sensitive_info(js_content)
+			
+			if findings:
+				all_findings[js_url] = findings
+				print(f"[!] 发现敏感信息!")
+				for category, values in findings.items():
+					print(f"    {category.upper()}: {len(values)} 处")
+			else:
+				print("[+] 未发现敏感信息")
+			
+		except Exception as e:
+			print(f"[-] 分析JS文件时出错: {e}")
+			continue
+	
+	# 输出敏感信息检测结果
+	if all_findings:
+		print_sensitive_results(all_findings)
+	else:
+		print("\n[*] 敏感信息检测完成，未发现敏感信息")
+
+def print_sensitive_results(all_findings):
+	"""打印敏感信息检测结果"""
+	print("\n" + "="*80)
+	print("[!] 敏感信息检测报告")
+	print("="*80)
+	
+	total_files = len(all_findings)
+	total_findings = sum(len(categories) for categories in all_findings.values())
+	
+	print(f"总计发现敏感信息的JS文件: {total_files} 个")
+	print(f"总计敏感信息条目: {total_findings} 处\n")
+	
+	output_lines = []
+	
+	for js_url, categories in all_findings.items():
+		output_lines.append(f"\nJS文件: {js_url}")
+		output_lines.append("-" * 60)
+		
+		for category, values in categories.items():
+			output_lines.append(f"\n{category.upper()} ({len(values)} 处):")
+			for value_info in values:
+				output_lines.append(f"  - 行号: {value_info['line_number']}")
+				output_lines.append(f"    隐藏值: {value_info['masked_value']}")
+				output_lines.append(f"    完整值: {value_info['full_value']}")
+				output_lines.append(f"    上下文: {value_info['context'][:100]}...")
+				output_lines.append("")
+		
+		output_lines.append("\n")
+	
+	# 输出到控制台
+	for line in output_lines:
+		print(line)
+	
+	# 保存到文件
+	if args.sensitive_output:
+		try:
+			with open(args.sensitive_output, 'w', encoding='utf-8') as f:
+				f.write("\n".join(output_lines))
+			print(f"\n[+] 敏感信息检测结果已保存到: {args.sensitive_output}")
+		except Exception as e:
+			print(f"[-] 保存敏感信息检测结果失败: {e}")
 
 if __name__ == "__main__":
-    main()
+	urllib3.disable_warnings()
+	args = parse_args()
+	if args.file == None:
+		if args.deep is not True:
+			urls = find_by_url(args.url)
+			giveresult(urls, args.url)
+		else:
+			urls = find_by_url_deep(args.url)
+			giveresult(urls, args.url)
+	else:
+		if args.js is not True:
+			urls = find_by_file(args.file)
+			if urls:
+				giveresult(urls, urls[0])
+			else:
+				print("[-] 未发现任何URL")
+		else:
+			urls = find_by_file(args.file, js = True)
+			if urls:
+				giveresult(urls, urls[0])
+			else:
+				print("[-] 未发现任何URL")
