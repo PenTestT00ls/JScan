@@ -78,6 +78,77 @@ class SmartSensitiveInfoDetector:
                     r'database[_-]?url\s*[=:]\s*["\']([^"\']+)["\']',
                 ],
                 'validator': self._validate_database_url
+            },
+            'email': {
+                'patterns': [
+                    r'email\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'mail\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'username\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'user\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'admin[_-]?email\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'contact[_-]?email\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_email
+            },
+            'private_key': {
+                'patterns': [
+                    r'-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----',
+                    r'private[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'ssh[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'rsa[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_private_key
+            },
+            'oauth': {
+                'patterns': [
+                    r'client[_-]?id\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'client[_-]?secret\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'oauth[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'oauth[_-]?secret\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'consumer[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'consumer[_-]?secret\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_oauth
+            },
+            'payment': {
+                'patterns': [
+                    r'credit[_-]?card\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'card[_-]?number\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'cvv\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'expiration\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'stripe[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'paypal[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_payment
+            },
+            'social_media': {
+                'patterns': [
+                    r'facebook[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'twitter[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'instagram[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'linkedin[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'google[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_social_media
+            },
+            'cloud_credentials': {
+                'patterns': [
+                    r'azure[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'gcp[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'google[_-]?cloud[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'digitalocean[_-]?token\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'heroku[_-]?key\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_cloud_credentials
+            },
+            'ip_address': {
+                'patterns': [
+                    r'ip[_-]?address\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'host\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'server[_-]?ip\s*[=:]\s*["\']([^"\']+)["\']',
+                    r'database[_-]?ip\s*[=:]\s*["\']([^"\']+)["\']',
+                ],
+                'validator': self._validate_ip_address
             }
         }
     
@@ -169,6 +240,123 @@ class SmartSensitiveInfoDetector:
             # 检查是否包含认证信息
             if '://' in value and ('@' in value or 'password' in value.lower()):
                 return True
+        
+        return False
+    
+    def _validate_email(self, value: str, context: str) -> bool:
+        """验证邮箱地址格式"""
+        # 邮箱地址正则表达式
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        
+        # 排除常见的测试邮箱
+        fake_emails = ['test@test.com', 'admin@admin.com', 'user@example.com', 
+                      'demo@demo.com', 'info@info.com', 'email@email.com']
+        
+        if value.lower() in fake_emails:
+            return False
+        
+        # 检查是否是有效的邮箱格式
+        if re.match(email_pattern, value):
+            return True
+        
+        return False
+    
+    def _validate_private_key(self, value: str, context: str) -> bool:
+        """验证私钥格式"""
+        # 检查是否是私钥格式
+        if value.startswith('-----BEGIN') and value.endswith('PRIVATE KEY-----'):
+            return True
+        
+        # 检查是否是较长的密钥值
+        if len(value) >= 50 and any(c.isalpha() for c in value) and any(c.isdigit() for c in value):
+            return True
+        
+        return False
+    
+    def _validate_oauth(self, value: str, context: str) -> bool:
+        """验证OAuth凭证格式"""
+        if not value or len(value) < 10:
+            return False
+        
+        # OAuth凭证通常较长
+        if len(value) >= 20:
+            return True
+        
+        # 检查是否是十六进制格式
+        if re.match(r'^[a-fA-F0-9]{32,}$', value):
+            return True
+        
+        return False
+    
+    def _validate_payment(self, value: str, context: str) -> bool:
+        """验证支付信息格式"""
+        # 信用卡号格式（排除测试卡号）
+        test_card_numbers = ['4111111111111111', '4242424242424242', '5555555555554444']
+        
+        if value in test_card_numbers:
+            return False
+        
+        # 信用卡号通常为13-19位数字
+        if re.match(r'^\d{13,19}$', value):
+            return True
+        
+        # CVV通常为3-4位数字
+        if re.match(r'^\d{3,4}$', value):
+            return True
+        
+        # 过期日期格式
+        if re.match(r'^(0[1-9]|1[0-2])/?([0-9]{2})$', value):
+            return True
+        
+        return False
+    
+    def _validate_social_media(self, value: str, context: str) -> bool:
+        """验证社交媒体令牌格式"""
+        if not value or len(value) < 10:
+            return False
+        
+        # 社交媒体令牌通常较长
+        if len(value) >= 20:
+            return True
+        
+        # 检查是否是十六进制或base64格式
+        if re.match(r'^[a-fA-F0-9]{32,}$', value) or re.match(r'^[A-Za-z0-9+/]{20,}={0,2}$', value):
+            return True
+        
+        return False
+    
+    def _validate_cloud_credentials(self, value: str, context: str) -> bool:
+        """验证云服务凭证格式"""
+        if not value or len(value) < 10:
+            return False
+        
+        # 云服务凭证通常较长
+        if len(value) >= 20:
+            return True
+        
+        # 检查是否是有效的凭证格式
+        if re.match(r'^[a-zA-Z0-9_-]{20,}$', value):
+            return True
+        
+        return False
+    
+    def _validate_ip_address(self, value: str, context: str) -> bool:
+        """验证IP地址格式"""
+        # IPv4地址格式
+        ipv4_pattern = r'^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+        
+        # IPv6地址格式（简化版）
+        ipv6_pattern = r'^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$'
+        
+        # 排除常见的测试IP地址
+        test_ips = ['127.0.0.1', 'localhost', '0.0.0.0', '192.168.0.1', '10.0.0.1']
+        
+        if value.lower() in test_ips:
+            return False
+        
+        # 检查是否是有效的IP地址
+        if re.match(ipv4_pattern, value) or re.match(ipv6_pattern, value):
+            return True
         
         return False
     
